@@ -30,7 +30,7 @@ from pandas import to_datetime
 from astropy.io import ascii
 from math import cos,sin,pi
 from typing import overload,List  
-from lambertools import matchLambert 
+# from lambertools import matchLambert 
 from math import log2,pow
 import os
 import random as rn
@@ -38,7 +38,7 @@ import random as rn
 
 import tensorflow as tf
 from tensorflow.keras import backend as K
-from tensorflow.compat.v1.keras.backend import set_session
+# from tensorflow.compat.v1.keras.backend import set_session
 
 #To be activated only if GPU available
 #physical_devices = tf.config.experimental.list_physical_devices('GPU')
@@ -338,11 +338,9 @@ class wrapModel:
         del full_input, full_target
     
     
-        dataset_tr = tf.data.Dataset.from_tensor_slices(({"input_1": full_input_train[0], 
-                                                           "input_2": full_input_train[1]},
+        dataset_tr = tf.data.Dataset.from_tensor_slices(((full_input_train[0], full_input_train[1]),
                                                             full_target_train[:,:,:,None])).batch(batch_size)
-        dataset_ts = tf.data.Dataset.from_tensor_slices(({"input_1": full_input_test[0], 
-                                                           "input_2": full_input_test[1]},
+        dataset_ts = tf.data.Dataset.from_tensor_slices(((full_input_test[0], full_input_test[1]),
                                                             full_target_test[:,:,:,None])).batch(batch_size)
         
         del full_input_train, full_target_train, full_input_test, full_target_test
@@ -355,27 +353,28 @@ class wrapModel:
         grid_ds    = xr.open_dataset(filepath_grid)     
         unet=self.unet_maker(nb_inputs=len(dataset_tr.element_spec[0]),
                             size_target_domain=dataset_tr.element_spec[1].shape[1],
-                            shape_inputs=[tuple(dataset_tr.element_spec[0][A].shape[1:]) for A in dataset_tr.element_spec[0]],
+                            shape_inputs=[tuple(spec.shape[1:]) for spec in dataset_tr.element_spec[0]],
                             filters = 64)
 
         unet.summary()
         
         LR, epochs = LR, 100
         
-        if target_var=='pr':
+        if target_var=='pr' and filepath_gamma_param is not None:
             gamma_param=xr.open_dataset(filepath_gamma_param).sel(x=grid_ds.x,y=grid_ds.y)
             alpha=gamma_param.alpha.values
             beta=1/gamma_param.beta.values
             lvl=tf.zeros_like(alpha)+1
             l=wmae_gb_glob_quant(alpha,beta,lvl)
         else:
+            print("WARNING: Using MSE loss instead of Gamma for 'pr' because gamma_param is missing.")
             l='mse'
         
         print(l)
         callbacks = [ReduceLROnPlateau(monitor='val_loss', factor=0.7, patience=4, verbose=1), EarlyStopping(monitor='val_loss', patience=15, verbose=1),
                  ModelCheckpoint(filepath_model, monitor='val_loss', verbose=1, save_best_only=True)]
         
-        unet.compile(optimizer=Adam(lr=LR), loss=l, metrics=[tf.metrics.RootMeanSquaredError()])   
+        unet.compile(optimizer=Adam(learning_rate=LR), loss=l, metrics=[tf.metrics.RootMeanSquaredError()])   
         
         tf.config.run_functions_eagerly(True)
                               
@@ -394,9 +393,9 @@ class wrapModel:
 class Predictors:
     #make the predictors following a set of parameters to define 
     def __init__(self,
-                 var_list=[None],                 # List of predictors (2D)
                  domain: str,                     # output domain name, must be defined in the class Domain
                  domain_size,                     # size of the input domain, can be integer or tuple, must be define in the class domain. 
+                 var_list=[None],                 # List of predictors (2D)
                  filepath=None,                   # path to the input file, must be a .nc file containing all 2D variables used as predictors (except aerosols) 
                  filepath_ref=None,               # path to the file used to normalize the inputs, must be similar to 'filepath'
                  stand=1,                         # way to standardize the data, see strandardize functions upper
@@ -405,13 +404,14 @@ class Predictors:
                  aero_ext=False,                  # Bool, to be True if aerosols variable is not in the input file 
                  filepath_aero=None,              # path to aerosol files (only if not in the input file)
                  aero_stdz=False,                 # Bool, to normalise or not the inputs
-                 aero_var='aero'                  # name of aero variable in filepath_aero
+                 aero_var='aero',                 # name of aero variable in filepath_aero
                  filepath_forc=None,              # path to the .csv file containing external forcings (GHG, solar, ozone...)
                  opt_ghg='ONE',                   # Option for the ghg, each comoponent (CO2, CH4....) seperately ('MULTI') or concatenated ('ONE') in C02 equivalent. 
                  seas=True                       # Bool, to include or not a cosine&sine vector for the season
                 ):
 
         self.domain=Domain(domain, domain_size)
+        print("DEBUG DOMAIN:", self.domain)
         with tf.device("/cpu:0"):
              self.input2D, self.input1D, self.timeout = self.make(filepath, 
                                                                   filepath_ref,
@@ -595,8 +595,8 @@ class Target:
         self.target = ds[target_var].sel(time=~((ds.time.dt.month==2) & (ds.time.dt.day==29)))
         self.lat = grid['lat']   
         self.lon = grid['lon'] 
-        self.y   = grid['y']
-        self.x   = grid['x'] 
+        self.y   = grid['y'] if 'y' in grid else grid['lat']
+        self.x   = grid['x'] if 'x' in grid else grid['lon']
         ds.close()
 
 
@@ -606,8 +606,8 @@ class Grid:
         ds = xr.open_dataset(filepath)
         self.lat = ds['lat']   
         self.lon = ds['lon'] 
-        self.y   = ds['y']
-        self.x   = ds['x'] 
+        self.y   = ds['y'] if 'y' in ds else ds['lat']
+        self.x   = ds['x'] if 'x' in ds else ds['lon']
         ds.close()
 
 
